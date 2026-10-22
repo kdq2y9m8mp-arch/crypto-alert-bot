@@ -2,7 +2,6 @@ name: Crypto Swing Alerts
 on:
   schedule:
     - cron: '2-59/5 * * * *'
-    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       test_notification:
@@ -32,6 +31,5 @@ jobs:
       - name: Check crypto and notify
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          HOURLY_SUMMARY: ${{ github.event_name == 'schedule' && github.event.schedule == '0 * * * *' && 'true' || 'false' }}
           TEST_NOTIFICATION: ${{ github.event_name == 'workflow_dispatch' && inputs.test_notification && 'true' || 'false' }}
         run: python monitor.py
