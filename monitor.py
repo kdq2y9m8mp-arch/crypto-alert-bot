@@ -76,6 +76,8 @@ def main():
         send_notification("Crypto Alerts Test", "GitHub Actions to ntfy is connected.")
         return
     errors = []
+    summary = []
+    hourly = os.environ.get("HOURLY_SUMMARY") == "true"
     for pair in PAIRS:
         try:
             item = signal_for(pair)
@@ -88,10 +90,16 @@ def main():
                            'Sell alert applies only if you hold the coin. No automatic trades.')
                 send_notification("Crypto " + item["kind"], message)
                 print("Sent", item["kind"], item["pair"])
+                summary.append(f'{pair}: {item["kind"]} (${item["price"]:,.4f})')
             else:
                 print("No signal:", pair)
+                summary.append(f"{pair}: No signal")
         except Exception as exc:
             errors.append(pair + ": " + str(exc))
+            summary.append(pair + ": Check failed")
+    if hourly:
+        send_notification("Crypto hourly status", "\n".join(summary) + "\nInformational only. No automatic trades.")
+        print("Sent hourly status")
     if errors:
         raise RuntimeError("; ".join(errors))
 
