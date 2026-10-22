@@ -1,0 +1,35 @@
+name: Crypto Swing Alerts
+on:
+  schedule:
+    - cron: '2-59/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: 'Send a test push notification'
+        type: boolean
+        default: true
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crypto-swing-alerts
+  cancel-in-progress: false
+
+jobs:
+  check-market:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check crypto and notify
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TEST_NOTIFICATION: ${{ github.event_name == 'workflow_dispatch' && inputs.test_notification && 'true' || 'false' }}
+        run: python monitor.py
