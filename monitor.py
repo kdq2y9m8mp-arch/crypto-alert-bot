@@ -27,15 +27,15 @@ def rsi(values, length=14):
         values_out.append(100.0 if loss == 0 else 100 - 100 / (1 + gain / loss))
     return values_out
 
-def get_candles(pair):
+def get_candles(pair, granularity=300):
     request = urllib.request.Request(
-        "https://api.exchange.coinbase.com/products/" + pair + "/candles?granularity=300",
+        "https://api.exchange.coinbase.com/products/" + pair + f"/candles?granularity={granularity}",
         headers=HEADERS,
     )
     with urllib.request.urlopen(request, timeout=25) as response:
         raw = json.load(response)
     now = int(dt.datetime.now(dt.timezone.utc).timestamp())
-    bars = sorted((v for v in raw if int(v[0]) + 300 <= now), key=lambda v: int(v[0]))
+    bars = sorted((v for v in raw if int(v[0]) + granularity <= now), key=lambda v: int(v[0]))
     if len(bars) < 65:
         raise RuntimeError("Not enough candles for " + pair)
     return bars
@@ -56,7 +56,29 @@ def signal_for(pair):
     if not buy and not sell:
         return None
     kind = "BUY WATCH" if buy else "SELL WATCH (only if held)"
-    return {"pair": pair, "kind": kind, "price": close[-1], "bar": int(bars[-1][0])}
+    hourly = get_candles(pair, 3600)
+    hourly_closes = [float(x[4]) for x in hourly]
+    hourly_fast = ema(hourly_closes, 20)[-1]
+    hourly_slow = ema(hourly_closes, 50)[-1]
+    trend = "UP" if hourly_fast > hourly_slow else "DOWN/FLAT"
+    aligned = (buy and hourly_fast > hourly_slow) or (sell and hourly_fast < hourly_slow)
+    reason = ("5m EMA20 crossover, EMA20 > EMA50, RSI >= 52, MACD positive"
+              if buy else "5m EMA20 breakdown / RSI below 45")
+    low = min(float(x[1]) for x in bars[-12:])
+    high = max(float(x[2]) for x in bars[-12:])
+    # Historical analogues: descriptive overlapping 30-minute observations, not backtest performance.
+    analogues = []
+    for k in range(55, len(close) - 6):
+        if fast[k] > slow[k] and histogram[k] > 0 and abs(strength[k] - strength[-1]) <= 5:
+            analogues.append(100 * (close[k + 6] / close[k] - 1))
+    history = ("Insufficient comparable recent samples"
+               if len(analogues) < 10 else
+               f"{len(analogues)} overlapping examples, {sum(x > 0 for x in analogues)} rose after 30m, "
+               f"average {sum(analogues) / len(analogues):+.2f}% (not predictive)")
+    return {"pair": pair, "kind": kind, "price": close[-1], "bar": int(bars[-1][0]),
+            "reason": reason, "rsi": strength[-1], "macd": histogram[-1],
+            "ema20": fast[-1], "ema50": slow[-1], "hourly": trend,
+            "aligned": aligned, "low": low, "high": high, "history": history}
 
 def send_notification(title, message):
     topic = os.environ.get("NTFY_TOPIC", "")
@@ -83,11 +105,17 @@ def main():
             item = signal_for(pair)
             if item:
                 timestamp = dt.datetime.fromtimestamp(item["bar"], dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                message = (f'{item["pair"]}: {item["kind"]}\n'
-                           f'Price: ${item["price"]:,.4f}\n'
-                           f'5-minute bar closed: {timestamp}\n'
-                           'Check fees, spread, higher timeframe, and risk before trading. '
-                           'Sell alert applies only if you hold the coin. No automatic trades.')
+                message = (f'{item["pair"]}: {item["kind"]}\\n'
+                           f'Price: ${item["price"]:,.4f}\\n'
+                           f'5m candle (UTC): {timestamp}\\n'
+                           f'Reason: {item["reason"]}\\n'
+                           f'EMA20: {item["ema20"]:.2f} | EMA50: {item["ema50"]:.2f}\\n'
+                           f'RSI14: {item["rsi"]:.1f} | MACD histogram: {item["macd"]:+.4f}\\n'
+                           f'1h trend: {item["hourly"]} | Signal alignment: {item["aligned"]}\\n'
+                           f'Recent 1h range: ${item["low"]:.2f} - ${item["high"]:.2f}\\n'
+                           f'Historical context: {item["history"]}\\n'
+                           'Outlook: alignment supports the move; disagreement raises false-signal risk.\\n'
+                           'Not investment advice or a guarantee. Check fees, spread and risk. No automatic trades.')
                 send_notification("Crypto " + item["kind"], message)
                 print("Sent", item["kind"], item["pair"])
                 summary.append(f'{pair}: {item["kind"]} (${item["price"]:,.4f})')
