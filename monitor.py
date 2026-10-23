@@ -93,6 +93,36 @@ def send_notification(title, message):
         if response.status >= 300:
             raise RuntimeError("Notification failed")
 
+SOL_QTY = 0.76007592
+SOL_ENTRY = 105.25
+# Estimated exit-cost allowance; replace with actual fees for precision.
+EXIT_COST_PCT = 0.5
+
+def sol_position_alert():
+    bars = get_candles("SOL-USD")
+    previous, current = float(bars[-2][4]), float(bars[-1][4])
+    levels = [
+        (107.90, "PROFIT WATCH"),
+        (110.50, "PROFIT WATCH"),
+        (101.00, "RISK WATCH"),
+    ]
+    alerts = []
+    for level, kind in levels:
+        crossing = (previous < level <= current if kind == "PROFIT WATCH"
+                    else previous > level >= current)
+        if crossing:
+            gross = (current - SOL_ENTRY) * SOL_QTY
+            net_estimate = gross - current * SOL_QTY * EXIT_COST_PCT / 100
+            details = (f"SOL {kind}\\n"
+                       f"5m closing price crossed ${level:.2f}\\n"
+                       f"Price ${current:.2f} | Cost basis ${SOL_ENTRY:.2f}\\n"
+                       f"Quantity {SOL_QTY:.8f} SOL\\n"
+                       f"Gross P/L ${gross:+.2f} | Estimated after {EXIT_COST_PCT}% "
+                       f"exit costs ${net_estimate:+.2f}\\n"
+                       "Check actual fees and the trend. Review selling manually; no auto trades.")
+            alerts.append((kind, details))
+    return alerts
+
 def main():
     if os.environ.get("TEST_NOTIFICATION") == "true":
         send_notification("Crypto Alerts Test", "GitHub Actions to ntfy is connected.")
@@ -105,16 +135,16 @@ def main():
             item = signal_for(pair)
             if item:
                 timestamp = dt.datetime.fromtimestamp(item["bar"], dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                message = (f'{item["pair"]}: {item["kind"]}\\n'
-                           f'Price: ${item["price"]:,.4f}\\n'
-                           f'5m candle (UTC): {timestamp}\\n'
-                           f'Reason: {item["reason"]}\\n'
-                           f'EMA20: {item["ema20"]:.2f} | EMA50: {item["ema50"]:.2f}\\n'
-                           f'RSI14: {item["rsi"]:.1f} | MACD histogram: {item["macd"]:+.4f}\\n'
-                           f'1h trend: {item["hourly"]} | Signal alignment: {item["aligned"]}\\n'
-                           f'Recent 1h range: ${item["low"]:.2f} - ${item["high"]:.2f}\\n'
-                           f'Historical context: {item["history"]}\\n'
-                           'Outlook: alignment supports the move; disagreement raises false-signal risk.\\n'
+                message = (f'{item["pair"]}: {item["kind"]}\n'
+                           f'Price: ${item["price"]:,.4f}\n'
+                           f'5m candle (UTC): {timestamp}\n'
+                           f'Reason: {item["reason"]}\n'
+                           f'EMA20: {item["ema20"]:.2f} | EMA50: {item["ema50"]:.2f}\n'
+                           f'RSI14: {item["rsi"]:.1f} | MACD histogram: {item["macd"]:+.4f}\n'
+                           f'1h trend: {item["hourly"]} | Signal alignment: {item["aligned"]}\n'
+                           f'Recent 1h range: ${item["low"]:.2f} - ${item["high"]:.2f}\n'
+                           f'Historical context: {item["history"]}\n'
+                           'Outlook: alignment supports the move; disagreement raises false-signal risk.\n'
                            'Not investment advice or a guarantee. Check fees, spread and risk. No automatic trades.')
                 send_notification("Crypto " + item["kind"], message)
                 print("Sent", item["kind"], item["pair"])
@@ -128,6 +158,12 @@ def main():
     if hourly:
         send_notification("Crypto hourly status", "\n".join(summary) + "\nInformational only. No automatic trades.")
         print("Sent hourly status")
+    try:
+        for title, message in sol_position_alert():
+            send_notification(title, message)
+            print("Sent SOL position alert:", title)
+    except Exception as exc:
+        errors.append("SOL position: " + str(exc))
     if errors:
         raise RuntimeError("; ".join(errors))
 
