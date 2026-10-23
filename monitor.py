@@ -95,33 +95,44 @@ def send_notification(title, message):
 
 SOL_QTY = 0.76007592
 SOL_ENTRY = 105.25
-# Estimated exit-cost allowance; replace with actual fees for precision.
-EXIT_COST_PCT = 0.5
+MAX_LOSS = 2.0
 
 def sol_position_alert():
     bars = get_candles("SOL-USD")
     previous, current = float(bars[-2][4]), float(bars[-1][4])
-    levels = [
-        (107.90, "PROFIT WATCH"),
-        (110.50, "PROFIT WATCH"),
-        (101.00, "RISK WATCH"),
-    ]
-    alerts = []
-    for level, kind in levels:
-        crossing = (previous < level <= current if kind == "PROFIT WATCH"
-                    else previous > level >= current)
-        if crossing:
-            gross = (current - SOL_ENTRY) * SOL_QTY
-            net_estimate = gross - current * SOL_QTY * EXIT_COST_PCT / 100
-            details = (f"SOL {kind}\\n"
-                       f"5m closing price crossed ${level:.2f}\\n"
-                       f"Price ${current:.2f} | Cost basis ${SOL_ENTRY:.2f}\\n"
-                       f"Quantity {SOL_QTY:.8f} SOL\\n"
-                       f"Gross P/L ${gross:+.2f} | Estimated after {EXIT_COST_PCT}% "
-                       f"exit costs ${net_estimate:+.2f}\\n"
-                       "Check actual fees and the trend. Review selling manually; no auto trades.")
-            alerts.append((kind, details))
-    return alerts
+    req = urllib.request.Request("https://api.exchange.coinbase.com/products/SOL-USD/ticker", headers=HEADERS)
+    with urllib.request.urlopen(req, timeout=20) as response:
+        quote = json.load(response)
+    bid, ask = float(quote["bid"]), float(quote["ask"])
+    if bid <= 0 or ask < bid:
+        raise ValueError("Invalid SOL ticker quote")
+    # Bid is Coinbase indicative; Webull executable price may differ.
+    cost = SOL_QTY * SOL_ENTRY
+    pnl = SOL_QTY * bid - cost
+    loss_bid = (cost - MAX_LOSS) / SOL_QTY
+    # Compare completed candles adjusted by latest spread estimate, to avoid repeated notices.
+    offset = max(0.0, current - bid)
+    previous_bid_estimate = previous - offset
+    events = []
+    def add(kind, detail):
+        msg = (f"SOL {kind}\n"
+               f"Coinbase bid: ${bid:.2f}, ask: ${ask:.2f}\n"
+               f"Entry: ${SOL_ENTRY:.2f}; held: {SOL_QTY:.8f} SOL\n"
+               f"Indicative value: ${bid * SOL_QTY:.2f}; P/L: ${pnl:+.2f}\n"
+               f"{detail}\n"
+               "Verify the Webull sell quote and fees; actual P/L can differ. No automatic sales.")
+        events.append((kind, msg))
+    if previous_bid_estimate > loss_bid >= bid:
+        add("LOSS LIMIT WATCH", f"Indicative $2 loss threshold reached at bid ${loss_bid:.2f}. Review exit now.")
+    for target in (107.90, 110.50):
+        if previous_bid_estimate < target <= bid:
+            add("PROFIT WATCH", f"Bid crossed ${target:.2f}. Consider profit-taking after costs.")
+    hours = get_candles("SOL-USD", 3600)
+    hc = [float(c[4]) for c in hours]
+    ef, es = ema(hc, 20), ema(hc, 50)
+    if ef[-2] >= es[-2] and ef[-1] < es[-1]:
+        add("1H TREND REVERSAL", "1h EMA20 crossed below EMA50 on a closed candle. Reassess holding.")
+    return events
 
 def main():
     if os.environ.get("TEST_NOTIFICATION") == "true":
