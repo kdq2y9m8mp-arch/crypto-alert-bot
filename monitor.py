@@ -28,14 +28,32 @@ def rsi(values, length=14):
     return out
 
 def candles(pair, seconds):
-    url = "https://api.exchange.coinbase.com/products/" + pair + "/candles?granularity=" + str(seconds)
+    # Coinbase Exchange supports 1h, not native 4h: aggregate aligned, complete 1h bars.
+    source_seconds = 3600 if seconds == 14400 else seconds
+    url = "https://api.exchange.coinbase.com/products/" + pair + "/candles?granularity=" + str(source_seconds)
     req = urllib.request.Request(url, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=25) as response:
         raw = json.load(response)
     now = int(dt.datetime.now(dt.timezone.utc).timestamp())
     # Coinbase format: [time, low, high, open, close, volume]
-    bars = sorted((bar for bar in raw if int(bar[0]) + seconds <= now), key=lambda x: int(x[0]))
-    if len(bars) < 65:
+    bars = sorted((bar for bar in raw if int(bar[0]) + source_seconds <= now),
+                  key=lambda x: int(x[0]))
+    if seconds == 14400:
+        groups = {}
+        for bar in bars:
+            start = int(bar[0]) // 14400 * 14400
+            groups.setdefault(start, []).append(bar)
+        merged = []
+        for start, group in sorted(groups.items()):
+            group.sort(key=lambda x: int(x[0]))
+            if (len(group) != 4 or start + 14400 > now
+                    or [int(x[0]) for x in group] != [start + k * 3600 for k in range(4)]):
+                continue
+            merged.append([start, min(float(x[1]) for x in group),
+                           max(float(x[2]) for x in group), float(group[0][3]),
+                           float(group[-1][4]), sum(float(x[5]) for x in group)])
+        bars = merged
+    if len(bars) < 55:
         raise RuntimeError("Insufficient completed bars: " + pair)
     return bars
 
