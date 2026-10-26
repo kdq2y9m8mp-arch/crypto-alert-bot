@@ -4,6 +4,7 @@ import json
 import os
 import urllib.parse
 import urllib.request
+from social_signals import collect, describe, context
 
 PAIRS = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD"]
 HEADERS = {"User-Agent": "crypto-alert-bot/2.0", "Accept": "application/json"}
@@ -140,6 +141,8 @@ def main():
     if os.getenv("TEST_NOTIFICATION") == "true":
         notify("Crypto Alerts Test", "GitHub Actions to ntfy is connected. Monitor v2.")
         return
+    items, feed_errors = collect()
+    print(f"RSS context: {len(items)} recent headlines; missing: {feed_errors}")
     btc_up = trend(candles("BTC-USD", 14400))
     errors = []
     for pair in PAIRS:
@@ -147,10 +150,33 @@ def main():
             result = evaluate(pair, btc_up)
             if result:
                 title, message = result
+                message += "\n\nPUBLIC INFORMATION CONTEXT (not verified market cause):\n" + describe(pair, items, feed_errors)
                 notify(title, message)
                 print("Sent:", pair, title)
             else:
-                print("No signal:", pair)
+                print("No trading signal:", pair)
+                # Only a fresh, independently price/volume-confirmed information WATCH.
+                # Do not send BUY recommendations on the basis of social media alone.
+                matching = context(pair, items)
+                fresh = [x for x in matching["official"] + matching["news"]
+                         if x["age_seconds"] <= 300]
+                if fresh:
+                    bars = candles(pair, 300)
+                    latest = float(bars[-1][4]); prior = float(bars[-2][4])
+                    vols = [float(x[5]) for x in bars]
+                    avg = sum(vols[-21:-1]) / 20
+                    ratio = vols[-1] / avg if avg else 0
+                    bar_age = dt.datetime.now(dt.timezone.utc).timestamp() - (int(bars[-1][0]) + 300)
+                    if (0 <= bar_age <= 360 and ratio >= 1.5 and
+                            abs(latest / prior - 1) >= 0.005):
+                        headline = fresh[0]
+                        msg = (f"{pair}: unusual 5m price/volume near recent public report.\n"
+                               f"5m price change: {(latest/prior-1)*100:+.2f}% | volume {ratio:.2f}x\n"
+                               f"Headline (unverified causality): {headline['title']}\n"
+                               f"Source: {headline['source']} {headline['url']}\n"
+                               "RESEARCH WATCH only; not an instruction to buy or sell.")
+                        notify("Crypto news + volume WATCH", msg)
+                        print("Sent research context:", pair)
         except Exception as error:
             errors.append(f"{pair}: {error}")
     if errors:
